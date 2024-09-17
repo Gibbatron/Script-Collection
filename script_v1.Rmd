@@ -1,0 +1,58 @@
+#Load & Install packages
+```{r}
+install.packages("RColorBrewer")
+install.packages("gplots")
+library(RColorBrewer)
+library(gplots)
+```
+
+#Import normalized data for heatmap and clustering
+
+#Please Note: I remade the file to contain the correct sample names and genes with p.adj.<0.001
+```{r}
+data <- read.table(file.choose(), header = TRUE, sep = "\t")
+
+#If the data table has 0's in, then we need to remove them!
+data[data==0] <- NA #change 0's to NA
+data <- data[complete.cases(data),] #make a new object with only complete values. i.e. no NA's
+
+rownames(data) <- data$gene_id # Assigns the column 'external_gene_name' as the rownames. makes the first column the rownames. change the column name to whatever its called in the dataset.
+data$gene_id <- NULL #removes the column named 'external_gene_name'. This is because we have assigned external_gene_name as the rownames.
+data <- as.matrix(data) #converts data into a numeric matrix which allows heatmap generation.
+```
+
+#Generate & save Heatmap ####
+```{r}
+pdf("Heatmap_fpkm_genes_defaultcolour.pdf") #creates a .pdf and opens it.
+
+heatmap.2(data, 
+          scale = "row",#values are centred and scaled in the row direction. can also be col or none
+          trace = "none", #trace='none' removes the trace lines on each row/column.
+          col = bluered, #blues9,#select colour scheme. can also be default (delete the row) or bluered etc
+          colsep = c(3), sepcolor = "black", #separate columns after column 4. separation colour is white. to separate more columns, use c(1, 2, 4) etc.
+          hclust=function(x) hclust(x,method="average"), #clusters columns using average linkage.
+          distfun=function(x) as.dist((1-cor(t(x)))/2), #measures distance between columns using 1 minus Pearsons correlation
+          density.info = "density", #changes the type of colour key. can also be histogram or none.
+          srtCol = 35, #angles the colum labels in degrees from horizontal.
+          cexCol = 1, #changes font size of column names
+          labRow = FALSE) # turns off labeling of the rows.
+
+dev.off() #saves the .pdf and closes it.
+
+
+pdf("/Users/alexgibbs/Dropbox/PhD/Sequencing_Data/GKP Lab Sequencing/Novogene/UWBCC1 RNAseq/X204SC21100066-Z01-F002/Result_X204SC21100066-Z01-F002/Heatmap_fpkm_sig.genes_defaultcolour.pdf") #creates a .pdf and opens it.
+
+heatmap.2(data, 
+          scale = "row",#values are centred and scaled in the row direction. can also be col or none
+          trace = "none", #trace='none' removes the trace lines on each row/column.
+          col = bluered, #blues9,#select colour scheme. can also be default (delete the row) or bluered etc
+          colsep = c(3), sepcolor = "black", #separate columns after column 4. separation colour is white. to separate more columns, use c(1, 2, 4) etc.
+          hclust=function(x) hclust(x,method="average"), #clusters columns using average linkage.
+          distfun=function(x) as.dist((1-cor(t(x)))/2), #measures distance between columns using 1 minus Pearsons correlation
+          density.info = "density", #changes the type of colour key. can also be histogram or none.
+          srtCol = 35, #angles the colum labels in degrees from horizontal.
+          cexCol = 1, #changes font size of column names
+          labRow = FALSE) # turns off labeling of the rows.
+
+dev.off() #saves the .pdf and closes it.
+```
