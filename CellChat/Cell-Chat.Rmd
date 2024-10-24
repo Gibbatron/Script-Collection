@@ -1,0 +1,253 @@
+#Install packages
+
+BiocManager::install("ComplexHeatmap")
+BiocManager::install("BiocNeighbors")
+library(ComplexHeatmap)
+library(BiocNeighbors)
+
+devtools::install_github(repo = "sqjin/CellChat")
+install.packages("dplyr")
+
+library(dplyr)
+library(CellChat)
+library(patchwork)
+
+#set working directory
+setwd("set/your/path")
+
+#subset the integrated object to control and treatment
+zeb1del <- subset(Integrated.data.0.1res, subset = group == 'Zeb1-del')
+control <- subset(Integrated.data.0.1res, subset = group == 'Control')
+
+#create cellchat objects from both datasets. Do not use the integrated assay as it contains negatives
+#instead use the RNA assay.
+
+zeb1del.cellchat <- createCellChat(zeb1del, group.by = 'cell_type', assay = 'RNA')
+control.cellchat <- createCellChat(control, group.by = 'cell_type', assay = 'RNA')
+
+
+#Set the ligand-receptor interaction database
+CellChatDB <- CellChatDB.mouse # use CellChatDB.human if running on human data
+showDatabaseCategory(CellChatDB)
+# Show the structure of the database
+dplyr::glimpse(CellChatDB$interaction)
+
+# use a subset of CellChatDB for cell-cell communication analysis
+#CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling") # use Secreted Signaling
+# use all CellChatDB for cell-cell communication analysis
+CellChatDB.use <- CellChatDB # simply use the default CellChatDB
+
+# set the used database in the cellchat object
+zeb1del.cellchat@DB <- CellChatDB.use
+control.cellchat@DB <- CellChatDB.use
+
+
+#Preprocess expression data for cell-cell communication analysis
+# subset the expression data of signaling genes for saving computation cost
+zeb1del.cellchat <- subsetData(zeb1del.cellchat) # This step is necessary even if using the whole database
+zeb1del.cellchat <- identifyOverExpressedGenes(zeb1del.cellchat)
+zeb1del.cellchat <- identifyOverExpressedInteractions(zeb1del.cellchat)
+
+control.cellchat <- subsetData(control.cellchat) # This step is necessary even if using the whole database
+control.cellchat <- identifyOverExpressedGenes(control.cellchat)
+control.cellchat <- identifyOverExpressedInteractions(control.cellchat)
+
+#Inference of cell-cell communication network
+#compute communication probability and infer cellular communication network
+zeb1del.cellchat <- computeCommunProb(zeb1del.cellchat)
+# Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+zeb1del.cellchat <- filterCommunication(zeb1del.cellchat, min.cells = 10)
+
+control.cellchat <- computeCommunProb(control.cellchat)
+# Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+control.cellchat <- filterCommunication(control.cellchat, min.cells = 10)
+
+#extract the inferred cellular communication network as data frame
+df.net.zeb1del <- subsetCommunication(zeb1del.cellchat)# returns a data frame consisting of all the inferred cell-cell communications at the level of ligands/receptors. 
+df.net.control <- subsetCommunication(control.cellchat)# returns a data frame consisting of all the inferred cell-cell communications at the level of ligands/receptors. 
+#Set `slot.name = "netP"` to access the the inferred communications at the level of signaling pathways
+
+#df.net <- subsetCommunication(cellchat, sources.use = c(1,2), targets.use = c(4,5))``` gives the inferred cell-cell communications sending from cell groups 1 and 2 to cell groups 4 and 5.
+#df.net <- subsetCommunication(cellchat, signaling = c("WNT", "TGFb"))``` gives the inferred cell-cell communications mediated by signaling WNT and TGFb. 
+
+#Infer the cell-cell communication at signaling pathway level
+zeb1del.cellchat <- computeCommunProbPathway(zeb1del.cellchat)
+control.cellchat <- computeCommunProbPathway(control.cellchat)
+
+#calculate aggregated cell-cell communication network
+zeb1del.cellchat <- aggregateNet(zeb1del.cellchat)
+control.cellchat <- aggregateNet(control.cellchat)
+
+#visualise
+pdf("cellchat/cell-cell-communication-network-ZEB1del.pdf")
+groupSizezeb1del <- as.numeric(table(zeb1del.cellchat@idents))
+#par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(zeb1del.cellchat@net$count, vertex.weight = groupSizezeb1del, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(zeb1del.cellchat@net$weight, vertex.weight = groupSizezeb1del, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+dev.off()
+
+pdf("cellchat/cell-cell-communication-network-Control.pdf")
+groupSizecontrol <- as.numeric(table(control.cellchat@idents))
+#par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(control.cellchat@net$count, vertex.weight = groupSizecontrol, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(control.cellchat@net$weight, vertex.weight = groupSizecontrol, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+dev.off()
+
+#Due to the complicated cell-cell communication network, we can examine the signaling sent from each cell group. 
+#Here we also control the parameter `edge.weight.max` so that we can compare edge weights between different networks. 
+pdf("cellchat/cell-cell-communication-network-individual-cell-types-ZEB1del.pdf")
+mat.zeb1del <- zeb1del.cellchat@net$weight
+#par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat.zeb1del)) {
+  mat.zeb1del2 <- matrix(0, nrow = nrow(mat.zeb1del), ncol = ncol(mat.zeb1del), dimnames = dimnames(mat.zeb1del))
+  mat.zeb1del2[i, ] <- mat.zeb1del[i, ]
+  netVisual_circle(mat.zeb1del2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat.zeb1del), title.name = rownames(mat.zeb1del)[i])
+}
+dev.off()
+
+pdf("cellchat/cell-cell-communication-network-individual-cell-types-Control.pdf")
+mat.control <- control.cellchat@net$weight
+#par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat.control)) {
+  mat.control2 <- matrix(0, nrow = nrow(mat.control), ncol = ncol(mat.control), dimnames = dimnames(mat.control))
+  mat.control2[i, ] <- mat.control[i, ]
+  netVisual_circle(mat.control2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat.control), title.name = rownames(mat.control)[i])
+}
+dev.off()
+
+
+#Visualise each signalling pathway using hierarchy plot, circleplot or chord diagram
+#**Hierarchy plot**: USER should define `vertex.receiver`, which is a numeric vector giving the index of the cell groups as targets in the left part of hierarchy plot. 
+#This hierarchical plot consist of two components: the left portion shows autocrine and paracrine signaling to certain cell groups of interest (i.e, the defined `vertex.receiver`), 
+#and the right portion shows autocrine and paracrine signaling to the remaining cell groups in the dataset. 
+#Thus, hierarchy plot provides an informative and intuitive way to visualize autocrine and paracrine signaling communications between cell groups of interest. 
+#For example, when studying the cell-cell communication between fibroblasts and immune cells, USER can define `vertex.receiver` as all fibroblast cell groups. 
+
+#**Chord diagram**: CellChat provides two functions `netVisual_chord_cell` and `netVisual_chord_gene` for visualizing cell-cell communication with different purposes and different levels. 
+#`netVisual_chord_cell` is used for visualizing the cell-cell communication between different cell groups (where each sector in the chord diagram is a cell group), 
+#and `netVisual_chord_gene` is used for visualizing the cell-cell communication mediated by mutiple ligand-receptors or signaling pathways (where each sector in the chord diagram is ligand,receptor or signaling pathway.)
+
+#**Explnations of edge color/weight, node color/size/shape**: In all visualization plots, edge colors are consistent with the sources as sender, and edge weights are proportional to the interaction strength.
+#Thicker edge line indicates a stronger signal. In the **Hierarchy plot and Circle plot**, circle sizes are proportional to the number of cells in each cell group. 
+#In the hierarchy plot, solid and open circles represent source and target, respectively. 
+#In the **Chord diagram**, the inner thinner bar colors represent the targets that receive signal from the corresponding outer bar. 
+#The inner bar size is proportional to the signal strength received by the targets. Such inner bar is helpful for interpreting the complex chord diagram. 
+#Note that there exist some inner bars without any chord for some cell groups, please just igore it because this is an issue that has not been addressed by [circlize](https://github.com/jokergoo/circlize) package. 
+
+#**Visualization of cell-cell communication at different levels**: 
+#One can visualize the inferred communication network of signaling pathways using `netVisual_aggregate`, 
+#and visualize the inferred communication networks of individual L-R pairs associated with that signaling pathway using `netVisual_individual`.
+
+#Here we take input of one signaling pathway as an example. All the signaling pathways showing significant communications can be accessed by `cellchat@netP$pathways`.
+#to find a pathway, look at cellchat-object@netP$pathways
+zeb1.pathways.show <- zeb1del.cellchat@netP$pathways 
+control.pathways.show <- control.cellchat@netP$pathways
+
+# Compute the contribution of each ligand-receptor pair to the overall signaling pathway and visualize cell-cell communication mediated by a single ligand-receptor pair
+netAnalysis_contribution(zeb1del.cellchat, signaling = zeb1.pathways.show)
+
+#We can also visualize the cell-cell communication mediated by a single ligand-receptor pair. We provide a function `extractEnrichedLR` to extract all the significant interactions (L-R pairs) and related signaling genes for a given signaling pathway.  
+pairLR.zeb1del.cellchat <- extractEnrichedLR(zeb1del.cellchat, signaling = zeb1.pathways.show, geneLR.return = FALSE)
+LR.show <- pairLR.zeb1del.cellchat[1,] # show one ligand-receptor pair
+# Hierarchy plot
+vertex.receiver = seq(1,4) # a numeric vector
+netVisual_individual(zeb1del.cellchat, signaling = zeb1.pathways.show,  pairLR.use = LR.show, vertex.receiver = vertex.receiver)
+# Circle plot
+netVisual_individual(zeb1del.cellchat, signaling = zeb1.pathways.show, pairLR.use = LR.show, layout = "circle")
+# Chord diagram
+netVisual_individual(zeb1del.cellchat, signaling = zeb1.pathways.show, pairLR.use = LR.show, layout = "chord")
+
+
+### Automatically save the plots of the all inferred network for quick exploration
+#In practical use, USERS can use 'for ... loop' to automatically save the all inferred network for quick exploration using `netVisual`. `netVisual` supports an output in the formats of svg, png and pdf. 
+# Access all the signaling pathways showing significant communications
+pathways.show.all <- zeb1del.cellchat@netP$pathways
+# check the order of cell identity to set suitable vertex.receiver
+levels(zeb1del.cellchat@idents)
+vertex.receiver = seq(1,4)
+setwd("set/your/path")
+for (i in 1:length(pathways.show.all)) {
+  # Visualize communication network associated with both signaling pathway and individual L-R pairs
+  netVisual(zeb1del.cellchat, signaling = pathways.show.all[i], vertex.receiver = vertex.receiver, layout = "hierarchy")
+  # Compute and visualize the contribution of each ligand-receptor pair to the overall signaling pathway
+  gg <- netAnalysis_contribution(zeb1del.cellchat, signaling = pathways.show.all[i])
+  ggsave(filename=paste0(pathways.show.all[i], "_L-R_contribution.pdf"), plot=gg, width = 3, height = 2, units = 'in', dpi = 300)
+}
+
+pathways.show.all <- control.cellchat@netP$pathways
+# check the order of cell identity to set suitable vertex.receiver
+levels(control.cellchat@idents)
+vertex.receiver = seq(1,4)
+setwd("set/your/path")
+for (i in 1:length(pathways.show.all)) {
+  # Visualize communication network associated with both signaling pathway and individual L-R pairs
+  netVisual(control.cellchat, signaling = pathways.show.all[i], vertex.receiver = vertex.receiver, layout = "hierarchy")
+  # Compute and visualize the contribution of each ligand-receptor pair to the overall signaling pathway
+  gg <- netAnalysis_contribution(control.cellchat, signaling = pathways.show.all[i])
+  ggsave(filename=paste0(pathways.show.all[i], "_L-R_contribution.pdf"), plot=gg, width = 3, height = 2, units = 'in', dpi = 300)
+}
+
+#extract the signalling genes related to the inferred LR pairs from your object
+test <- extractEnrichedLR(zeb1del.cellchat, signaling = zeb1del.cellchat@netP$pathways)
+
+
+### Compute and visualize the network centrality scores
+# Compute the network centrality scores
+zeb1del.cellchat <- netAnalysis_computeCentrality(zeb1del.cellchat, slot.name = "netP") # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+# Visualize the computed centrality scores using heatmap, allowing ready identification of major signaling roles of cell groups
+netAnalysis_signalingRole_network(zeb1del.cellchat, signaling = zeb1.pathways.show, width = 8, height = 2.5, font.size = 10)
+
+
+### Visualize the dominant senders (sources) and receivers (targets) in a 2D space
+#We also provide another intutive way to visualize the dominant senders (sources) and receivers (targets) in a 2D space using scatter plot. 
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+gg1 <- netAnalysis_signalingRole_scatter(zeb1del.cellchat)
+# Signaling role analysis on the cell-cell communication networks of interest
+gg2 <- netAnalysis_signalingRole_scatter(zeb1del.cellchat, signaling = zeb1.pathways.show)
+gg1 + gg2
+
+### Identify signals contributing most to outgoing or incoming signaling of certain cell groups
+# We can also answer the question on which signals contributing most to outgoing or incoming signaling of certain cell groups.
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+ht1 <- netAnalysis_signalingRole_heatmap(zeb1del.cellchat, pattern = "outgoing")
+ht2 <- netAnalysis_signalingRole_heatmap(zeb1del.cellchat, pattern = "incoming")
+ht1 + ht2
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Hierarchy plot
+# Here we define `vertex.receive` so that the left portion of the hierarchy plot shows signaling to fibroblast and the right portion shows signaling to immune cells 
+vertex.receiver = seq(1,4) # a numeric vector. 
+netVisual_aggregate(zeb1del.cellchat, signaling = zeb1.pathways.show,  vertex.receiver = vertex.receiver)
+# Circle plot
+par(mfrow=c(1,1))
+netVisual_aggregate(zeb1del.cellchat, signaling = zeb1.pathways.show, layout = "circle")
+# Chord diagram
+par(mfrow=c(1,1))
+netVisual_aggregate(zeb1del.cellchat, signaling = zeb1.pathways.show, layout = "chord")
+# Heatmap
+par(mfrow=c(1,1))
+netVisual_heatmap(zeb1del.cellchat, signaling = zeb1.pathways.show, color.heatmap = "Reds")
+
+
+
+
+netVisual_bubble(zeb1del.cellchat, sources.use = 4, targets.use = c(5:11), remove.isolate = FALSE)
+
+
+zeb1del.cellchat <- netAnalysis_computeCentrality(zeb1del.cellchat, slot.name = "netP") # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+# Visualize the computed centrality scores using heatmap, allowing ready identification of major signaling roles of cell groups
+netAnalysis_signalingRole_network(zeb1del.cellchat, signaling = zeb1.pathways.show, width = 8, height = 2.5, font.size = 10)
