@@ -1,0 +1,444 @@
+---
+title: "deseq2, unpaired all norm analysis"
+author: "Alex Gibbs"
+date: "15/08/2023"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Notes:
+
+Double check the targets file on line 26 and line 173, is the right targets file selected?
+
+
+Set working directory and define the required comparisons
+
+```{r}
+
+setwd("/Users/alexgibbs/OneDrive - Cardiff University/crest/analyses/agan0001/Deseq2/bin/")
+
+#countInputFiles <- c("all.markdup.genecount", "all.rmdup.genecount")
+countInputFiles <- c("all.markdup.genecount")
+
+fpkmCountfilters <- c("nofilter", 0, 0.5, 5)
+#fpkmCountfilters <- c(5)
+##############################################################################################
+targets <- read.table("../resources/targets-v2.csv", sep=",", header=T)
+##############################################################################################
+myComparisons <- c(#"CER_384_LPGP_vs_CER_384_LNGP",
+                   #"CER_526_LPGP_vs_CER_526_LNGP",
+                   #"CER_625_LPGP_vs_CER_625_LNGP",
+                   #"CER_626_LPGP_vs_CER_626_LNGP",
+                   #"E6_645_LPGP_vs_E6_645_LNGP",
+                  #"E6_661_LPGP_vs_E6_661_LNGP",
+                   #"WT_421_LPGP_vs_WT_421_LNGP",
+                  #"WT_422_LPGP_vs_WT_422_LNGP",
+                  #"WT_609_LPGP_vs_WT_609_LNGP",
+                  #"WT_621_LPGP_vs_WT_621_LNGP",
+                   #"WT_622_LPGP_vs_WT_622_LNGP",
+                   #"E6_LPGP_vs_E6_LNGP",
+                   #"E6_LPGP_vs_E6_LNGP",
+                  # "WT_LPGP_vs_WT_LNGP",
+                   #"E6_LPGP_vs_WT_LPGP",
+                   #"E6_LNGP_vs_WT_LPGP"
+                   #"E6_LPGP_vs_WT_LPGP",
+                  # "CER_LNGP_vs_WT_LNGP"
+                   #"E6_LNGP_vs_WT_LNGP"
+                   "E6_LPGP_vs_E6_LNGP",
+                   "E6_LPGP_vs_WT_LNGP",
+                   "E6_LPGP_vs_WT_LPGP",
+                   "E6_LNGP_vs_WT_LPGP",
+                   "E6_LNGP_vs_WT_LNGP",
+                   "WT_LPGP_vs_WT_LNGP")
+
+apadjCutoffs <- c("allgenes", "top50genes", "sig0-01", "sig0-05")
+
+#run without removing any outliers first
+#outliers <- NULL
+
+#if there are outliers you wish to remove, input the analysisIDs below
+outliers <- c("E6_645_LPGP", "E6_645_LNGP", "CER_625_LPGP", "CER_625_LNGP", "WT_621_LNGP", "WT_621_LPGP", "CER_384_LNGP", "E6_661_LPGP","WT_422_LPGP")
+             #"WT_622_LNGP", "CER_626_LNGP", "CER_626_LPGP")
+              #"WT_421_LPGP", "WT_422_LPGP", "WT_609_LPGP", "WT_621_LPGP", "WT_622_LPGP", "CER_626_LNGP", "CER_626_LPGP")
+
+################################################################################################
+pcaWindows <- c("sampleGroup")#, "day", "pathogen") 
+################################################################################################
+```
+
+Load relevant libraries
+
+```{r}
+
+library(DESeq2)     # differential analysis
+
+library(ape)        # clustering QC
+library(ggplot2)    # PCA plotting
+library(ggrepel)
+
+library(dplyr)            # data manipulations
+
+```
+
+Get all genes length from the all.markdup.genecount.txt file
+
+```{r}
+
+rawData <- read.table("../input/all.markdup.genecount.txt", sep="\t", header=T)
+
+geneLengths <- dplyr::select(rawData, ensemblGeneID, geneLength)
+
+```
+
+Define functions used in the code below
+
+```{r}
+
+RunDeseq2 <- function(rc, gl) {
+      
+    ## create the experimental design object for DeSeq2
+    
+    exptDesign <- data.frame(
+            row.names = colnames(rc),
+            condition = sampleGroups)
+    
+    ## construct experiment object
+    
+    exptObject <- DESeqDataSetFromMatrix(
+          countData = rc,
+          colData = exptDesign,
+          design = ~ condition)
+
+    ## run the anlysis
+        
+    analysisObject = DESeq(exptObject)
+
+    ## add gene lengths to the analysis object for the FPKM calculation
+    
+    geneLengthsTemp <- gl[gl$ensemblGeneID %in% rownames(analysisObject),]
+    mcols(analysisObject)$basepairs <- geneLengthsTemp[match(rownames(analysisObject), geneLengthsTemp$ensemblGeneID),]$geneLength
+    
+    return(analysisObject)    
+}
+
+
+GetUniqueGenes <- function(anr, ty) {
+  
+  sgenes <- NULL
+  anr <- anr[order(anr$pvalue), ]  
+  
+  if (ty == "allgenes") {
+     sgenes <- rownames(anr)
+  } else if (grepl("^sig", ty)) {
+    ty <- gsub("-", ".", gsub("sig", "", ty))
+    
+    ## need to get genes that are also NA but significant
+    
+    for (i in 1:length(anr[,1])) {
+    
+      if (is.na(anr[i,]$padj)) {
+        sgenes <- c(sgenes, rownames((anr[i,]))) 
+      } else if ((as.numeric(anr[i,]$padj) < as.numeric(ty))) {
+        sgenes <- c(sgenes, rownames((anr[i,]))) 
+      } else {
+        break
+      }
+    }
+  } else if (grepl("^top", ty)) {
+    ty <- gsub("top", "", gsub("genes", "", ty))
+    sgenes <- rownames(anr[1:as.numeric(ty),])
+  } else {
+    stop("cuttoff not recognised")
+  }
+  
+  return (sgenes)
+}
+
+
+    
+```
+
+
+Perform the differential analysis over the count filters
+
+```{r}
+
+## loop over the 2 files under input/
+
+for (countfilter in fpkmCountfilters) {
+  
+  for (file in countInputFiles) {
+  ###############################  ###############################  ###############################  ###############################  ###############################  ###############################
+    # open targets file for reading
+    targets <- read.table("../resources/targets-v2.csv", sep=",", header=T)
+     ###############################  ###############################  ###############################  ###############################  ###############################  ###############################
+    ## read input file
+    
+    rawCounts = read.table(paste("../input/", file, ".txt", sep=""), sep="\t", header=TRUE, check.names=F)
+    
+    ## remove outliers
+    
+    if (length(outliers) > 0) {
+      
+      targets <- targets[!targets$analysisID %in% outliers, ]
+      rawCounts <- rawCounts[, !(names(rawCounts) %in% outliers)]
+    }
+    
+    ## remove any minus sign from the column names
+    
+    colnames(rawCounts) <- sub("-", ".", colnames(rawCounts))
+    
+    # parse out the 3 first columns of annotation
+    
+    annotationNames <- rawCounts[,c(1:4)]
+    
+    # get the sample groups and mouse definitions from targets
+    ################################################################################################################################
+    sampleGroups <- targets$sampleGroup
+    ################################################################################################################################
+    ## RUN ANALYSIS 
+    
+    # add rownames to the raw data, and remove all annotation columns
+    
+    rownames(rawCounts) = rawCounts[,1]
+    rawCounts[,c(1:4)] <- NULL
+    
+    ## check the order of the targets files and input counts file are identical
+    
+    if (!identical(as.character(targets$analysisID), colnames(rawCounts))) {
+      rawCounts <- dplyr::select(rawCounts, as.character(targets$analysisID))
+    }
+    
+    ## run analysis without filters
+    
+    analysisObject <- RunDeseq2(rawCounts, geneLengths)
+      
+    ## get FPKM normalised data from the analysis object
+    
+    rawCounts <- counts(analysisObject, normalized = FALSE)
+    fpkmNormalisedCounts <- fpkm(analysisObject, robust = TRUE)
+    
+    if (!identical(rownames(rawCounts), rownames(fpkmNormalisedCounts))) {
+      stop()
+    }
+    
+    ## filter the object by FPKMs
+    
+    if (countfilter != "nofilter") {
+      
+      ## exclude any gene where it's value is not greater than "countfilter" over any condition
+    
+      rawCountsToKeep <- rawCounts[rowSums(fpkmNormalisedCounts > countfilter) >= 1, ]
+    
+      ## run analysis with filters
+    
+      analysisObject <- RunDeseq2(rawCountsToKeep, geneLengths)
+    }
+    
+    ## get normalised data from the analysis object
+    
+    rawCounts <- counts(analysisObject, normalized = FALSE)
+    normalisedCounts <- counts(analysisObject, normalized = TRUE)
+    fpkmNormalisedCounts <- fpkm(analysisObject, robust = TRUE)
+    
+    if (!identical(rownames(rawCounts), rownames(normalisedCounts))) { stop() }
+    if (!identical(rownames(fpkmNormalisedCounts), rownames(rawCounts))) { stop() }
+    
+
+    
+    
+    ## merge raw and normalised data
+    ## add the words "raw.counts" to each column names
+    
+    colnames(rawCounts) = gsub("^", "raw.counts.", colnames(rawCounts))
+    colnames(normalisedCounts) = gsub("^", "norm.counts.", colnames(normalisedCounts))
+    colnames(fpkmNormalisedCounts) = gsub("^", "fpkm.norm.counts.", colnames(fpkmNormalisedCounts))
+    
+     ## print counts
+    
+   
+    annotatedRawCounts <- merge(annotationNames, rawCounts, by.x="ensemblGeneID", by.y="row.names")
+    annotatedNormCounts <- merge(annotationNames, normalisedCounts, by.x="ensemblGeneID", by.y="row.names")
+    annotatedFPKMCounts <- merge(annotationNames, fpkmNormalisedCounts, by.x="ensemblGeneID", by.y="row.names")
+      
+    write.table(annotatedRawCounts, paste("../output/", file, ".FPKM", countfilter, ".rawcounts.txt", sep=""), sep="\t", row.names = F, quote = F)
+    write.table(annotatedNormCounts, paste("../output/", file, ".FPKM", countfilter, ".normcounts.txt", sep=""), sep="\t", row.names = F, quote = F)
+    write.table(annotatedFPKMCounts, paste("../output/", file, ".FPKM", countfilter, ".fpkmnormcounts.txt", sep=""), sep="\t", row.names = F, quote = F)
+    
+    
+    
+    
+    tempData = merge(rawCounts, normalisedCounts, by="row.names", all=T)
+    rownames(tempData) <- tempData[,1]
+    tempData[,1] <- NULL
+  
+    finalData = merge(tempData, fpkmNormalisedCounts, by="row.names", all=T)
+    rownames(finalData) <- finalData[,1]
+    finalData[,1] <- NULL
+  
+    printNormCounts <- data.frame(ensembleID=rownames(fpkmNormalisedCounts), fpkmNormalisedCounts)
+    ################################################################################################################################################################
+    ## circle over the comparisons of everything versus everything
+    ################################################################################################################################################################
+    for (myComparison in myComparisons) {
+      
+        numerator <- unlist(strsplit(myComparison, "_vs_"))[1]
+        denominator <- unlist(strsplit(myComparison, "_vs_"))[2]
+        
+        print(myComparison)
+                            
+        result <- as.data.frame(results(analysisObject, contrast=c("condition", numerator, denominator), independentFiltering=TRUE, pAdjustMethod="BH"))
+        
+        slimData <- as.data.frame(cbind(rownames(finalData), finalData))
+                       
+        colnames(slimData)[1] <-  "tracking_id"
+             
+         ## get only the genes of interest
+        
+        slimData <- dplyr::select(slimData, tracking_id, colnames(dplyr::select(slimData, paste("raw.counts", unlist(subset(targets, sampleGroup == numerator, analysisID)), sep="."), paste("raw.counts", unlist(subset(targets, sampleGroup == denominator, analysisID)), sep="."), paste("norm.counts", unlist(subset(targets, sampleGroup == numerator, analysisID)), sep="."), paste("norm.counts", unlist(subset(targets, sampleGroup == denominator, analysisID)), sep="."), paste("fpkm.norm.counts", unlist(subset(targets, sampleGroup == numerator, analysisID)), sep="."), paste("fpkm.norm.counts", unlist(subset(targets, sampleGroup == denominator, analysisID)), sep="."))))
+                          
+    
+        printData <- merge(slimData, result, by.x = "tracking_id", by.y = "row.names", all = T)
+
+        ## add annotation
+            
+        printData <- merge(annotationNames, printData, by.x="ensemblGeneID", by.y="tracking_id") 
+                
+        printData <- printData[order(printData$pvalue), ]    
+        
+        ## add second header
+        
+        printData %>% mutate_if(is.factor, as.character) -> printData2
+        printData2 <- rbind(colnames(printData), printData2)
+        
+        ## get group names for final output file
+    
+        temp <- colnames(slimData[-1])
+        temp <- gsub("^raw.counts.", "", gsub("^norm.counts.", "", gsub("^fpkm.norm.counts.", "", temp)))
+        
+        outputColHeadings <- c(colnames(annotationNames), as.vector(targets$sampleGroup[match(temp, targets$analysisID)]), colnames(result))
+  
+        printData2 <- rbind(outputColHeadings, printData2)
+        
+        ## comment on outliers removed
+        commentLine <- rep("", length(outputColHeadings))
+        commentLine[1] <- paste("## Outliers removed: ", paste(outliers, collapse=" "), sep="")
+        printData2 <- rbind(commentLine, printData2)
+        
+        write.table(printData2, file=paste("../output/", numerator, "_vs_", denominator, ".", file, ".FPKM", countfilter, ".allnorm.txt", sep=""), col.names=F, row.names=F, sep="\t", quote=F)
+                    
+     }
+    
+    ## perform ANOVA for the PCA: looking for changing genes across the entire experiment
+    
+    anovaResult <- as.data.frame(results(analysisObject, pAdjustMethod="BH"))
+    anovaResult <- anovaResult[order(anovaResult$pvalue), ]  
+    
+    ## plot all genes PCA
+    
+    for (dirName in apadjCutoffs) {
+      
+      print(dirName )
+      
+      ## get unique genes
+      uniqueSignificantGenes <- GetUniqueGenes(anovaResult, dirName);
+      
+      if (length(uniqueSignificantGenes) > 5) {
+        
+        ## create a directory under output if not there already
+      
+        if (!file.exists(paste("../output/", dirName, sep=""))) {
+          dir.create(file.path("../output/", dirName))
+        }
+        
+        
+        ## create subset of significant genes
+        
+        pcaDD <- subset(fpkmNormalisedCounts, rownames(rawCounts) %in% uniqueSignificantGenes)
+        
+        
+        ## create object for hierarchical clustering
+        
+        hierData <- pcaDD
+    
+        ## change label name to feature sampleGroup
+        b <- NULL
+    
+        for (a in gsub("^fpkm.norm.counts.", "", colnames(hierData))) {
+          b <- c(b, paste(as.vector(targets$sampleGroup[targets$analysisID == a]), a, sep=" "))
+        }
+    
+        colnames(hierData) <- b
+    
+        d <- cor(hierData, method="pearson")
+        hc <- hclust(dist(1-d))
+    
+        ## write to outputfile
+    
+        hierData <- data.frame(ensembleGeneID=rownames(hierData), hierData)
+        
+        aa <- subset(rawData, ensemblGeneID %in% rownames(hierData), select=c(ensemblGeneID, geneName))
+        bb <- merge(aa, hierData,  by.y="row.names", by.x="ensemblGeneID")
+        bb[,3] <- NULL
+                   
+        write.table(bb, file=paste("../output/", dirName, "/hcluster.", file, ".FPKM", countfilter, ".FPKM.", dirName, ".txt", sep=""), col.names=T, row.names=F, sep="\t", quote=F)
+    
+    
+        ## create pca object
+    
+        pca <- prcomp(t(pcaDD), center=TRUE, scale=F)
+        scores <- data.frame(targets$analysisID, pca$x[,1:2])
+    
+        # write PCA coordinates to file
+    
+        write.table(scores, paste("../output/", dirName, "/PCA.", file, ".FPKM", countfilter, ".coord.", dirName, ".txt", sep=""), sep="\t", row.names = F, quote = F)
+       
+        # write loadings to a file
+       
+        aload <- abs(pca$rotation)
+        loadings <- sweep(aload, 2, colSums(aload), "/")
+        loadings <- cbind(row.names(loadings), loadings)
+        write.table(loadings, paste("../output/", dirName, "/PCA.", file, ".FPKM", countfilter, ".load.", dirName, ".txt", sep=""), sep="\t", row.names = F, quote = F)
+              
+        # write percentage contributions to file
+       
+        write.table(summary(pca)$importance[2,], paste("../output/", dirName, "/PCA.", file, ".FPKM", countfilter, ".perc.", dirName, ".txt", sep=""), sep="\t", row.names = T, quote = F)
+       
+        ## open the PDF
+      
+        pointSize <- 0.4
+    
+        pdf(paste("../output/", dirName, "/PCA.", file, ".FPKM", countfilter, ".", dirName, ".pdf", sep=""), onefile=T)
+    
+        ## print dendrogram
+        
+        tiplabs <- as.phylo(hc)$tip.label
+        numbertiplabs<-length(tiplabs)
+        colourtips<-rep("blue",numbertiplabs)
+        colourtips[grep("CTR2",tiplabs)]<-"red"
+
+        plot.phylo(as.phylo(hc), type="p", show.node.label=TRUE, main=paste(file, "plotting FPKMs using [", length(uniqueSignificantGenes), "] genes.  Outliers removed are: [" , paste(outliers, collapse = " "), "]", sep=" "), cex=pointSize, cex.main=pointSize, tip.color=colourtips)
+        
+        ## print PCA windows
+        
+        for (x in pcaWindows) {
+          print(qplot(x=PC1, y=PC2, main = paste(file, "plotting FPKMs using [", length(uniqueSignificantGenes), "] genes.  Outliers removed are: [" , paste(outliers, collapse = " "), "]", sep=" "), data=scores, label=factor(targets$analysisID), colour=factor(targets[[x]])) + geom_text_repel(size=2.5) +  scale_colour_discrete(name=x) + theme(plot.title = element_text(size = 5))  )
+        }
+    
+        dev.off()
+      }
+    }
+  }
+}
+
+```
+
+Remake PCA plots with different labels etc
+```{r}
+ 
+        for (x in pcaWindows) {
+          print(qplot(x=PC1, y=PC2, main = paste(file, "plotting FPKMs using [", length(uniqueSignificantGenes), "] genes.  Outliers removed are: [" , paste(outliers, collapse = " "), "]", sep=" "), data=scores, label=factor(targets$sampleGroup), colour=factor(targets[["sampleGroup"]])) + geom_text_repel(size=2.5) +  scale_colour_discrete(name=x) + theme(plot.title = element_text(size = 5))  )
+        }
+
+```
