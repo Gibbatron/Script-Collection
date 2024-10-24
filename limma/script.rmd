@@ -1,0 +1,1356 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#### Cell Lines vs Control & Eachother ####
+#Set-up
+Load the libraries you require.  Libraries are collections functions written by developers for the purpose of analysing specific types of data.
+
+The limma library contains functions for performing differential gene expression analysis.
+Documentation can be found here: https://www.bioconductor.org/packages/release/bioc/html/limma.html
+
+```{r}
+getwd()
+require("limma")
+setwd(dir = "OneDrive - Cardiff University/crest/analyses/agan0003/limma/")
+```
+
+The oligo library contains functions for normalising and averaging Affymetrix data.
+https://www.bioconductor.org/packages/release/bioc/html/oligo.html
+
+```{r}
+BiocManager::install("affycoretools")
+
+require("affycoretools")
+require("BiocGenerics")
+require("S4Vectors")
+require("IRanges")
+require("XVector")
+require("oligoClasses")
+require("Biobase")
+require("Biostrings")
+require("oligo")
+
+```
+
+The following library contains information about the locations of the probes on arrays. Double check which array you did and download the correct one.
+https://www.bioconductor.org/packages/3.6/data/annotation/
+https://www.bioconductor.org/packages/3.6/data/annotation/html/pd.hugene.1.0.st.v1.html
+https://www.bioconductor.org/packages/3.6/data/annotation/html/pd.hugene.2.0.st.html
+```{r}
+
+require("pkgconfig")
+require("DBI")
+require("RSQLite")
+#require("pd.hugene.1.0.st.v1")
+require("pd.hugene.2.0.st") #steves data is using hugene.2.0
+
+```
+
+#Read Targets
+Read the targets file into the script.  The readTargets() function is part of the previously loaded limma library.
+
+The targets file defines a mapping between filename and sampleID
+
+```{r}
+
+targets <- readTargets(file="targets.outliers.removed.txt")
+
+```
+
+#Load .CEL Files
+Load the Affymetrix CEL files into memory.  The read.celfiles() function is part of the previously loaded oligo library.
+
+The read.celfiles() function takes 2 input arguments: the filenames and the names you would like to assign to each of the replicates (sampleID).  It will read the raw gene expression intensities into memory for processing.
+
+```{r}
+
+exp.raw <- read.celfiles(filenames=list.celfiles(), sampleNames=targets[targets$fileName %in% list.celfiles(),]$sampleID)
+
+```
+
+#Normalise
+Normalise the raw data via the method called "RMA" (robust multiarray average).  The raw intensity values are background corrected, log2 transformed and quantile normalised. Next a linear model is fit to the normalised data to obtain an expression measure for each probe, on each of the arrays (replicate probes are averaged).
+
+rma() is a function within the oligo library.
+
+```{r}
+
+exp.norm <- rma(exp.raw)
+
+```
+
+#Plot Distributions
+Plot the raw data distributions.
+
+Plotting uses another library (the popular) ggplot2 library.
+
+```{r}
+
+library("withr")
+library("ggplot2")
+library("labeling")
+library("farver")
+
+boxRaw <- as.data.frame(exprs(exp.raw))
+
+log2BoxRaw <- log2(boxRaw)
+
+boxplot(log2BoxRaw, range=0, main="Boxplot: log2 raw expression", las=2)
+
+```
+
+Plot the same for the normalised data.  Note this time you don't log2 transform (this has been done already within rma())
+
+```{r} 
+
+boxNorm <- as.data.frame(exprs(exp.norm))
+
+boxplot(boxNorm, range=0, main="Boxplot: rma normalised expression", las=2)
+
+```
+
+#PCA
+Run a Principal Component Analysis on the normalised expression values
+
+```{r}
+library("dplyr")
+library("plotly")
+
+pca <- prcomp(t(exprs(exp.norm)), center=TRUE, scale=TRUE)
+
+scores <- data.frame(targets$sampleType, pca$x[,1:3])
+
+#2D Plot
+qplot(x=PC1, y=PC2, data=scores, label=factor(targets$sampleID), colour=factor(targets$sampleType))  + geom_text(size=2.5) + scale_colour_discrete(name="sample type")
+
+#3D Plot
+plot_ly(data = scores, 
+        x = ~PC1, y = ~PC2, z = ~PC3, 
+        type = "scatter3d", 
+        mode = "markers",
+        color = targets$sampleType,
+        #colors = c("#F8766D", "#619CFF"),
+        text = targets$sampleID) %>% layout(title="3D PCA Colored by Sample Group") 
+```
+
+#Data Set-up
+The data are now "analysis ready".  We want to perform a "t-test" for every probe (gene) for the control versus experimental groups.  This will yield a fold-change (log2FC) and a p-value (adjusted pvalue), for each gene.  This will tell us which genes are significantly up/down-regulated between the 2 samples.
+
+Here we setup the data structures required for the calculation.
+
+```{r}
+
+fac <- factor(targets$sampleType)
+design <- model.matrix(~ 0 + fac)
+colnames(design) <- levels(fac)
+
+```
+
+#Define Comparisons
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+                                 "LnCaP_vs_Control"=LnCaP-Control, 
+                                 "DU145_vs_Control"=DU145-Control, 
+                                 levels=design)
+
+```
+#Fit the model
+Fit (average) the data with a linear model, and perform the required comparison (t-test the MCF7 average with the FASR average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+#Create Toptable
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, n=length(exp.ebayes$F))
+
+```
+#Fill Toptable
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+
+# create the averaged normalised expression values
+
+normalisedExpressionValues$PNT2.mean <- rowMeans(normalisedExpressionValues[,3:4], na.rm=TRUE)
+normalisedExpressionValues$LnCaP.mean <- rowMeans(normalisedExpressionValues[,5:7], na.rm=TRUE)
+normalisedExpressionValues$DU145.mean <- rowMeans(normalisedExpressionValues[,8:10], na.rm=TRUE)
+normalisedExpressionValues$Control.mean <- rowMeans(normalisedExpressionValues[,1:2], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+#Annotate Data
+Read in the annotation files and associate the annotation with the results made previously.
+••DONT FILTER, GIVE ALL OF IT BACK••
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (PNT2_vs_Control >= 1.584963 | LnCaP_vs_Control >= 1.584963 | DU145_vs_Control >= 1.584963 | PNT2_vs_Control <= -1.584963 | LnCaP_vs_Control <= -1.584963 | DU145_vs_Control <= -1.584963) & adj.P.Val < 0.05)
+
+#write.table(filteredSortedAnnotatedTopTable, file="anova_results.FC3.p0.05.txt", row.names=FALSE, sep="\t", quote=F)
+
+#write.table(dplyr::select(filteredSortedAnnotatedTopTable, affy_hugene_2_0_st_v1, ensembl_gene_id, external_gene_name, description, gene_biotype, contains("_vs_")), file="cluster_input.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+
+#Create gene annotation file
+
+```{r}
+
+library("biomaRt")
+
+ensembl <- useMart("ensembl")
+ensembl <- useDataset("hsapiens_gene_ensembl", mart=ensembl)
+
+#if you dont know the name of the annotation table, use listAttributes(mart = ensembl) to list them all
+
+annotationDF <- getBM(attributes = c('affy_hugene_2_0_st_v1', 'ensembl_gene_id', 'external_gene_name', 'description', 'gene_biotype'), filters = 'affy_hugene_2_0_st_v1', values = featureNames(exp.norm), mart = ensembl)
+
+write.table(annotationDF, "affy.annotation.txt", sep="\t", quote=F, row.names=F)
+
+#annotatedTable <- merge(annotationDF, topTable, by.x="affy_hugene_1_0_st_v1", by.y="row.names")
+
+#library("dplyr")
+
+##sortedAnnotatedTable <- arrange(annotatedTable, P.Value)
+
+#write.table(sortedAnnotatedTable, file="results.txt", row.names=FALSE, sep="\t", quote=F)
+   
+```
+
+
+#PNT2_vs_Control
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+                                 levels=design)
+
+#contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+ #                                "LnCaP_vs_Control"=LnCaP-Control, 
+  #                               "DU145_vs_Control"=DU145-Control, 
+   #                              levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("PNT2"), contains("Control"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$PNT2.mean <- rowMeans(normalisedExpressionValues[,1:2], na.rm=TRUE)
+normalisedExpressionValues$Control.mean <- rowMeans(normalisedExpressionValues[,3:4], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="PNT2_vs_Control.degs.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+#LnCaP_vs_Control
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("LnCaP_vs_Control"=LnCaP-Control, 
+                                 levels=design)
+
+#contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+ #                                "LnCaP_vs_Control"=LnCaP-Control, 
+  #                               "DU145_vs_Control"=DU145-Control, 
+   #                              levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("LnCaP"), contains("Control"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$LnCaP.mean <- rowMeans(normalisedExpressionValues[,1:3], na.rm=TRUE)
+normalisedExpressionValues$Control.mean <- rowMeans(normalisedExpressionValues[,4:5], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="LnCaP_vs_Control.degs.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+
+#DU145_vs_Control
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("DU145_vs_Control"=DU145-Control, 
+                                 levels=design)
+
+#contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+ #                                "LnCaP_vs_Control"=LnCaP-Control, 
+  #                               "DU145_vs_Control"=DU145-Control, 
+   #                              levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("DU145"), contains("Control"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$DU145.mean <- rowMeans(normalisedExpressionValues[,1:3], na.rm=TRUE)
+normalisedExpressionValues$Control.mean <- rowMeans(normalisedExpressionValues[,4:5], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="DU145_vs_Control.degs.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+
+
+#PNT2_vs_LnCaP
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("PNT2_vs_LnCaP"=PNT2-LnCaP, 
+                                 levels=design)
+
+#contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+ #                                "LnCaP_vs_Control"=LnCaP-Control, 
+  #                               "DU145_vs_Control"=DU145-Control, 
+   #                              levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("PNT2"), contains("LnCaP"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$PNT2.mean <- rowMeans(normalisedExpressionValues[,1:2], na.rm=TRUE)
+normalisedExpressionValues$LnCaP.mean <- rowMeans(normalisedExpressionValues[,3:5], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="PNT2_vs_LnCaP.degs.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+
+#PNT2_vs_DU145
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("PNT2_vs_DU145"=PNT2-DU145, 
+                                 levels=design)
+
+#contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+ #                                "LnCaP_vs_Control"=LnCaP-Control, 
+  #                               "DU145_vs_Control"=DU145-Control, 
+   #                              levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("PNT2"), contains("DU145"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$PNT2.mean <- rowMeans(normalisedExpressionValues[,1:2], na.rm=TRUE)
+normalisedExpressionValues$DU145.mean <- rowMeans(normalisedExpressionValues[,3:5], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="PNT2_vs_DU145.degs.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+
+
+#LnCaP_vs_DU145
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("LnCaP_vs_DU145"=LnCaP-DU145, 
+                                 levels=design)
+
+#contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+ #                                "LnCaP_vs_Control"=LnCaP-Control, 
+  #                               "DU145_vs_Control"=DU145-Control, 
+   #                              levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("LnCaP"), contains("DU145"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$LnCaP.mean <- rowMeans(normalisedExpressionValues[,1:3], na.rm=TRUE)
+normalisedExpressionValues$DU145.mean <- rowMeans(normalisedExpressionValues[,4:6], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="LnCaP_vs_DU145.degs.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+#LnCaP_vs_PNT2
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("LnCaP_vs_PNT2"=LnCaP-PNT2, 
+                                 levels=design)
+
+#contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+ #                                "LnCaP_vs_Control"=LnCaP-Control, 
+  #                               "DU145_vs_Control"=DU145-Control, 
+   #                              levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("LnCaP"), contains("PNT2"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$LnCaP.mean <- rowMeans(normalisedExpressionValues[,1:3], na.rm=TRUE)
+normalisedExpressionValues$PNT2.mean <- rowMeans(normalisedExpressionValues[,4:5], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="LnCaP_vs_PNT2.results.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+#
+#DU145_vs_LnCaP
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("DU145_vs_LnCaP"=DU145-LnCaP, 
+                                 levels=design)
+
+#contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+ #                                "LnCaP_vs_Control"=LnCaP-Control, 
+  #                               "DU145_vs_Control"=DU145-Control, 
+   #                              levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("DU145"), contains("LnCaP"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$DU145.mean <- rowMeans(normalisedExpressionValues[,1:3], na.rm=TRUE)
+normalisedExpressionValues$LnCaP.mean <- rowMeans(normalisedExpressionValues[,4:6], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="DU145_vs_LnCaP.results.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+
+#DU145_vs_PNT2
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("DU145_vs_PNT2"=DU145-PNT2, 
+                                 levels=design)
+
+#contrast.matrix <- makeContrasts("PNT2_vs_Control"=PNT2-Control, 
+ #                                "LnCaP_vs_Control"=LnCaP-Control, 
+  #                               "DU145_vs_Control"=DU145-Control, 
+   #                              levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("DU145"), contains("PNT2"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$DU145.mean <- rowMeans(normalisedExpressionValues[,1:3], na.rm=TRUE)
+normalisedExpressionValues$PNT2.mean <- rowMeans(normalisedExpressionValues[,4:5], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="DU145_vs_PNT2.results.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+#
+
+#### Cancer vs Control & Normal ####
+#Set-up
+Load the libraries you require.  Libraries are collections functions written by developers for the purpose of analysing specific types of data.
+
+The limma library contains functions for performing differential gene expression analysis.
+Documentation can be found here: https://www.bioconductor.org/packages/release/bioc/html/limma.html
+
+```{r}
+
+require("limma")
+setwd(dir = "/Users/c1427056/OneDrive - Cardiff University/crest/analyses/agan0003/limma")
+```
+
+The oligo library contains functions for normalising and averaging Affymetrix data.
+https://www.bioconductor.org/packages/release/bioc/html/oligo.html
+
+```{r}
+BiocManager::install("affycoretools")
+
+require("affycoretools")
+require("BiocGenerics")
+require("S4Vectors")
+require("IRanges")
+require("XVector")
+require("oligoClasses")
+require("Biobase")
+require("Biostrings")
+require("oligo")
+
+```
+
+The following library contains information about the locations of the probes on arrays. Double check which array you did and download the correct one.
+https://www.bioconductor.org/packages/3.6/data/annotation/
+https://www.bioconductor.org/packages/3.6/data/annotation/html/pd.hugene.1.0.st.v1.html
+https://www.bioconductor.org/packages/3.6/data/annotation/html/pd.hugene.2.0.st.html
+```{r}
+
+require("pkgconfig")
+require("DBI")
+require("RSQLite")
+#require("pd.hugene.1.0.st.v1")
+require("pd.hugene.2.0.st")
+
+```
+#Read Targets
+Read the targets file into the script.  The readTargets() function is part of the previously loaded limma library.
+
+The targets file defines a mapping between filename and sampleID
+
+```{r}
+
+targets <- readTargets(file="targets.txt")
+
+```
+
+#Load .CEL Files
+Load the Affymetrix CEL files into memory.  The read.celfiles() function is part of the previously loaded oligo library.
+
+The read.celfiles() function takes 2 input arguments: the filenames and the names you would like to assign to each of the replicates (sampleID).  It will read the raw gene expression intensities into memory for processing.
+
+```{r}
+
+exp.raw <- read.celfiles(filenames=targets$fileName, sampleNames=targets$sampleID)
+
+```
+
+#Normalise
+Normalise the raw data via the method called "RMA" (robust multiarray average).  The raw intensity values are background corrected, log2 transformed and quantile normalised. Next a linear model is fit to the normalised data to obtain an expression measure for each probe, on each of the arrays (replicate probes are averaged).
+
+rma() is a function within the oligo library.
+
+```{r}
+
+exp.norm <- rma(exp.raw)
+
+```
+#Plot Distributions
+Plot the raw data distributions.
+
+Plotting uses another library (the popular) ggplot2 library.
+
+```{r}
+
+library("withr")
+library("ggplot2")
+library("labeling")
+library("farver")
+
+boxRaw <- as.data.frame(exprs(exp.raw))
+
+log2BoxRaw <- log2(boxRaw)
+
+boxplot(log2BoxRaw, range=0, main="Boxplot: log2 raw expression", las=2)
+
+```
+
+Plot the same for the normalised data.  Note this time you don't log2 transform (this has been done already within rma())
+
+```{r} 
+
+boxNorm <- as.data.frame(exprs(exp.norm))
+
+boxplot(boxNorm, range=0, main="Boxplot: rma normalised expression", las=2)
+
+```
+
+#PCA
+Run a Principal Component Analysis on the normalised expression values
+
+```{r}
+library("dplyr")
+library("plotly")
+
+pca <- prcomp(t(exprs(exp.norm)), center=TRUE, scale=TRUE)
+
+scores <- data.frame(targets$diseaseType, pca$x[,1:3])
+
+#2D Plot
+qplot(x=PC1, y=PC2, data=scores, label=factor(targets$sampleID), colour=factor(targets$diseaseType))  + geom_text(size=2.5) + scale_colour_discrete(name="disease type")
+
+#3D Plot
+plot_ly(data = scores, 
+        x = ~PC1, y = ~PC2, z = ~PC3, 
+        type = "scatter3d", 
+        mode = "markers",
+        color = targets$diseaseType,
+        #colors = c("#F8766D", "#619CFF"),
+        text = targets$sampleID) %>% layout(title="3D PCA Colored by Disease Group") 
+```
+
+#Data Set-up
+The data are now "analysis ready".  We want to perform a "t-test" for every probe (gene) for the control versus experimental groups.  This will yield a fold-change (log2FC) and a p-value (adjusted pvalue), for each gene.  This will tell us which genes are significantly up/down-regulated between the 2 samples.
+
+Here we setup the data structures required for the calculation.
+
+```{r}
+
+fac <- factor(targets$diseaseType)
+design <- model.matrix(~ 0 + fac)
+colnames(design) <- levels(fac)
+
+```
+#Define Comparisons
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("Cancer_vs_Control"=Cancer-Control, 
+                                 "Cancer_vs_Normal"=Cancer-Normal, 
+                                 "Normal_vs_Control"=Normal-Control, 
+                                 levels=design)
+
+```
+
+#Fit the model
+Fit (average) the data with a linear model, and perform the required comparison (t-test the MCF7 average with the FASR average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+#Create Toptable
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, n=length(exp.ebayes$F))
+
+```
+
+#Fill Toptable
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+
+# create the averaged normalised expression values
+
+normalisedExpressionValues$Normal.mean <- rowMeans(normalisedExpressionValues[,1:3], na.rm=TRUE)
+normalisedExpressionValues$Control.mean <- rowMeans(normalisedExpressionValues[,10:12], na.rm=TRUE)
+normalisedExpressionValues$Cancer.mean <- rowMeans(normalisedExpressionValues[,4:9], na.rm=TRUE)
+#normalisedExpressionValues$Control.mean <- rowMeans(normalisedExpressionValues[,10:12], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+#Annotate Data
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (Cancer_vs_Control >= 1.584963 | Normal_vs_Control >= 1.584963 | Cancer_vs_Normal >= 1.584963) & adj.P.Val < 0.05)
+
+write.table(filteredSortedAnnotatedTopTable, file="anova_results.FC3.p0.05.txt", row.names=FALSE, sep="\t", quote=F)
+
+write.table(dplyr::select(filteredSortedAnnotatedTopTable, affy_hugene_2_0_st_v1, ensembl_gene_id, external_gene_name, description, gene_biotype, contains("_vs_")), file="cluster_input.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+
+#Create gene annotation file
+
+```{r}
+
+library("biomaRt")
+
+ensembl <- useMart("ensembl")
+ensembl <- useDataset("hsapiens_gene_ensembl", mart=ensembl)
+
+#if you dont know the name of the annotation table, use listAttributes(mart = ensembl) to list them all
+
+annotationDF <- getBM(attributes = c('affy_hugene_2_0_st_v1', 'ensembl_gene_id', 'external_gene_name', 'description', 'gene_biotype'), filters = 'affy_hugene_2_0_st_v1', values = featureNames(exp.norm), mart = ensembl)
+
+write.table(annotationDF, "affy.annotation.txt", sep="\t", quote=F, row.names=F)
+
+#annotatedTable <- merge(annotationDF, topTable, by.x="affy_hugene_1_0_st_v1", by.y="row.names")
+
+#library("dplyr")
+
+##sortedAnnotatedTable <- arrange(annotatedTable, P.Value)
+
+#write.table(sortedAnnotatedTable, file="results.txt", row.names=FALSE, sep="\t", quote=F)
+   
+```
+
+
+#Cancer_vs_Control
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("Cancer_vs_Control"=Cancer-Control, 
+                                 levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("LnCaP"), contains("DU145"), contains("Control"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$Cancer.mean <- rowMeans(normalisedExpressionValues[,1:6], na.rm=TRUE)
+normalisedExpressionValues$Control.mean <- rowMeans(normalisedExpressionValues[,7:8], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="Cancer_vs_Control.results.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+
+#Cancer_vs_Normal
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("Cancer_vs_Normal"=Cancer-Normal, 
+                                 levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("LnCaP"), contains("DU145"), contains("PNT2"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$Cancer.mean <- rowMeans(normalisedExpressionValues[,1:6], na.rm=TRUE)
+normalisedExpressionValues$Normal.mean <- rowMeans(normalisedExpressionValues[,7:8], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="Cancer_vs_Normal.results.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
+
+#Normal_vs_Control
+Define the comparison you wish to make.  Typically the control sample goes on the right (denominator).
+
+```{r}
+
+contrast.matrix <- makeContrasts("Normal_vs_Control"=Normal-Control, 
+                                 levels=design)
+
+```
+
+Fit (average) the data with a linear model, and perform the required comparison (t-test the M0 average with the M1 average)
+
+These functions are all part of the limma library
+
+```{r}
+
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+
+```
+
+Print out the list of differentially expressed genes and their statistics.
+
+```{r}
+
+topTable <- topTable(exp.ebayes, coef=1, n=length(exp.ebayes$F))
+
+```
+
+Add the expression values to this topTable matrix
+
+```{r}
+
+# extract the expression values
+
+normalisedExpressionValues <- as.data.frame(exprs(exp.norm))
+normalisedExpressionValues <- dplyr::select(normalisedExpressionValues, contains("PNT2"), contains("Control"))
+  
+# create the averaged normalised expression values
+
+normalisedExpressionValues$Normal.mean <- rowMeans(normalisedExpressionValues[,1:2], na.rm=TRUE)
+normalisedExpressionValues$Control.mean <- rowMeans(normalisedExpressionValues[,3:4], na.rm=TRUE)
+
+# add the expression values to the topTable
+
+exprTopTable <- merge(normalisedExpressionValues, topTable, by.x="row.names", by.y="row.names")
+
+```
+
+Read in the annotation files and associate the annotation with the results made previously.
+
+```{r}
+
+library("dplyr")
+
+annotation <- read.table("affy.annotation.txt", sep="\t", header=TRUE, quote="")
+
+annotatedTopTable <- merge(annotation, exprTopTable, by.x="affy_hugene_2_0_st_v1", by.y="Row.names")
+
+#sortedAnnotatedTopTable <- dplyr::arrange(annotatedTopTable, P.Value)
+
+#filteredSortedAnnotatedTopTable  <- dplyr::filter(sortedAnnotatedTopTable, (logFC >= 0.584963 | logFC <= -0.584963) & adj.P.Val < 0.05)
+
+write.table(annotatedTopTable, file="Normal_vs_Control.results.txt", row.names=FALSE, sep="\t", quote=F)
+
+```
