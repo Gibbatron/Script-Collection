@@ -1,0 +1,93 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Load the library required for graph plotting 
+
+```{r}
+
+library("crayon")
+library("withr")
+library("ggplot2")
+library("labeling")
+library("farver")
+library("digest")
+
+```
+
+Open the ANOVA file and reads into a data.frame object
+
+```{r}
+
+anovaData <- read.table(file="anova_results.FC3.p0.01.txt", sep="\t", header=T)
+
+```
+
+Add FC (fold-change) values to this sheet
+
+```{r}
+
+# create the antilog
+anovaData$FASR_vs_MCF7.FC <- 2^anovaData$FASR_vs_MCF7
+
+# for values below one, take reciprocal and reverse the sign
+anovaData$FASR_vs_MCF7.FC <- sapply(anovaData$FASR_vs_MCF7.FC, function(x) ifelse(x < 1, -1/x, x))
+
+# repeat for the other 2 columns
+anovaData$TAMR_vs_MCF7.FC <- 2^anovaData$TAMR_vs_MCF7
+anovaData$TAMR_vs_MCF7.FC <- sapply(anovaData$TAMR_vs_MCF7.FC, function(x) ifelse(x < 1, -1/x, x))
+
+anovaData$TOYA_vs_MCF7.FC <- 2^anovaData$TOYA_vs_MCF7
+anovaData$TOYA_vs_MCF7.FC <- sapply(anovaData$TOYA_vs_MCF7.FC, function(x) ifelse(x < 1, -1/x, x))
+
+```
+
+Create standard deviations for plotting standard error
+
+```{r}
+
+library(matrixStats)
+
+anovaData$FASR.sd <- rowSds(as.matrix(anovaData[,6:8]), na.rm=TRUE)
+anovaData$MCF7.sd <- rowSds(as.matrix(anovaData[,9:11]), na.rm=TRUE)
+anovaData$TAMR.sd <- rowSds(as.matrix(anovaData[,12:14]), na.rm=TRUE)
+anovaData$TOYA.sd <- rowSds(as.matrix(anovaData[,15:17]), na.rm=TRUE)
+
+```
+
+Plot the standard error for a single gene
+
+```{r}
+
+# get the line for the gene of interest
+singleGene <- anovaData[ which(anovaData$external_gene_name == "ESR1"),]
+
+# get the mean and standard deviation
+plotData <- data.frame(Samples = c("FASR", "MCF7", "TAMR", "TOYA"), 
+                       Mean = c(singleGene$FASR.mean, singleGene$MCR7.mean, singleGene$TAMR.mean, singleGene$TOYA.mean),
+                       StandardDeviation = c(singleGene$FASR.sd, singleGene$MCF7.sd, singleGene$TAMR.sd, singleGene$TOYA.sd))
+
+# plot
+
+qplot(plotData$Samples, plotData$Mean) +
+geom_errorbar(aes(x=plotData$Samples, ymin=plotData$Mean - plotData$StandardDeviation, ymax=plotData$Mean + plotData$StandardDeviation), width=0.25) + 
+labs(x = "Samples", y="RMA-Normalised Expression") + 
+theme(text = element_text(size=12))
+
+```
+
+Export the data for clustering
+
+```{r}
+
+library("dplyr")
+
+anovaData <- read.table(file="anova_results.FC3.p0.01.txt", sep="\t", header=T)
+
+write.table(dplyr::select(anovaData, affy_hugene_1_0_st_v1, ensembl_gene_id, external_gene_name, description, gene_biotype, contains("_vs_")), file="cluster_input.txt", row.names=FALSE, sep="\t", quote=F)
+
+
+```
+
