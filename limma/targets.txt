@@ -1,0 +1,13 @@
+sampleNumber	fileName	sampleID	sampleType	diseaseType
+1	SM_1_(HuGene-2_0-st).CEL	PNT2.1	PNT2	Normal
+10	SM_10_(HuGene-2_0-st).CEL	Control.1	Control	Control
+11	SM_11_(HuGene-2_0-st).CEL	Control.2	Control	Control
+12	SM_12_(HuGene-2_0-st).CEL	Control.3	Control	Control
+2	SM_2_(HuGene-2_0-st).CEL	PNT2.2	PNT2	Normal
+3	SM_3_(HuGene-2_0-st).CEL	PNT2.3	PNT2	Normal
+4	SM_4_(HuGene-2_0-st).CEL	LnCaP.1	LnCaP	Cancer
+5	SM_5_(HuGene-2_0-st).CEL	LnCaP.2	LnCaP	Cancer
+6	SM_6_(HuGene-2_0-st).CEL	LnCaP.3	LnCaP	Cancer
+7	SM_7_(HuGene-2_0-st).CEL	DU145.1	DU145	Cancer
+8	SM_8_(HuGene-2_0-st).CEL	DU145.2	DU145	Cancer
+9	SM_9_(HuGene-2_0-st).CEL	DU145.3	DU145	Cancer
