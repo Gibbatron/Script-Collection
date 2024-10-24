@@ -1,0 +1,182 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+Analysis of pilot data
+analysisID: agan0005
+
+For each of the 3 datatsets (protein, metabolite, species) find out which vairables (molecule or species) are changing most between the groups.
+
+This will give a 3 lists:
+(1) discriminating proteins; (2) discriminating metabolites; (3) discriminating species.
+
+We will then do combinations of these in the 06 code.
+
+```{r}
+
+manifestFile <- "../input/metadata.2groups.xlsx"
+
+```
+
+Load library to begin analysis
+
+```{r}
+
+#install.packages("pROC")
+
+library("readxl")
+library("dplyr")
+library("pROC")
+
+```
+
+Define a function to perform one-way ANOVA over columns of a dataframe
+
+```{r}
+
+run_glm <- function (infile, manifestFile) {
+  
+  # read-in sample manifest
+  sampleKey <- read_excel(manifestFile)
+  colnames(sampleKey) <- c("sampleName", "sampleGroup")
+  
+  # read-in metabolite file
+  inputData <- read.table(infile, header = TRUE, check.names = F, sep="\t")
+
+  if (length(inputData[,1]) != 0) {
+    # remove the unwanted columns
+    row.names(inputData) <- inputData[,1]
+    inputData[,1:2] <- NULL
+  
+    # transpose
+    inputData2 <- as.data.frame(t(inputData))
+  
+    # create data.frame of the type:
+    # sampleGroup <T> moleculeValue <END>
+  
+    inputData3 <- merge(sampleKey, inputData2, by.x="sampleName", by.y="row.names")
+    inputData3$sampleGroup <- as.factor(inputData3$sampleGroup)
+  
+    # run linear model
+  
+    returnValues <- data.frame(ind=character(), glm.pvalue=double(), roc.auc=double())
+  
+    for (molecule in 3:length(colnames(inputData3))) {
+    
+      inputData4 <- inputData3[,c(2, molecule)]
+      colnames(inputData4)[2] <- "value"
+    
+      glmResults <- glm(formula = sampleGroup ~ value,
+                     data = inputData4,
+                     family = binomial)
+    
+      ## get the pvalue
+    p <- coef(summary(glmResults))[,4][2]
+    
+      ## get the auc
+      temp <- cbind(predict(glmResults), inputData4$sampleGroup)
+      colnames(temp) <- c("pred", "status")
+     dfTemp <- as.data.frame(temp)
+      AUC <- auc(roc(dfTemp$status, dfTemp$pred))[1]
+    
+      returnValues[nrow(returnValues) + 1,] <- c(colnames(inputData3)[molecule], p, AUC)
+    }
+
+    outputData <- merge(returnValues, inputData, by.x="ind", by.y="row.names")
+  } else {
+    
+    returnValues <- data.frame(ind=character(), glm.pvalue=double(), roc.auc=double())
+    outputData <- inputData
+  }
+  return (outputData)
+}
+
+```
+
+
+Metabolite glm
+
+```{r}
+
+## loop over the pvalues
+
+for (pvalue in c(0.01, 0.05)) {
+  
+  metaboliteFile <- paste0("../output/norm.filtered/metabolite.norm.filtered.", pvalue, ".txt")
+  
+  # get pvalue and AUC from glm and roc
+  outputData <- run_glm(metaboliteFile, manifestFile)
+
+  # write to output
+  write.table(outputData, file=paste0("../output/univariable-modelling/metabolite.unimodel.all.", pvalue, ".txt"), row.names=F, col.names=T, sep="\t")
+
+  # write filtered to output
+  for (cutoff in c("0.05")) {
+  
+    filteredOutputData <- dplyr::filter(outputData, glm.pvalue < cutoff)
+    write.table(filteredOutputData, file=paste0("../output/univariable-modelling/metabolite.unimodel.all.", pvalue, ".", cutoff, ".txt"), row.names=F, col.names=T, sep="\t")
+  
+  }
+}
+
+
+```
+
+Protein glm
+
+```{r}
+
+## loop over the pvalues
+
+for (pvalue in c(0.01, 0.05)) {
+  
+  proteinFile <- paste0("../output/norm.filtered/protein.norm.filtered.", pvalue, ".txt")
+    
+  # get pvalue and AUC from glm and roc
+  outputData <- run_glm(proteinFile, manifestFile)
+
+  # write to output
+  write.table(outputData, file=paste0("../output/univariable-modelling/protein.unimodel.all.", pvalue, ".txt"), row.names=F, col.names=T, sep="\t")
+
+  # write filtered to output
+  for (cutoff in c("0.05")) {
+  
+    filteredOutputData <- dplyr::filter(outputData, glm.pvalue < cutoff)
+    write.table(filteredOutputData, file=paste0("../output/univariable-modelling/protein.unimodel.all.", pvalue, ".", cutoff, ".txt"), row.names=F, col.names=T, sep="\t")
+  
+  }
+}
+
+```
+
+Species glm
+
+```{r}
+
+for (pvalue in c(0.01, 0.05)) {
+  
+  speciesFile <- paste0("../output/norm.filtered/species.norm.filtered.", pvalue, ".txt")
+    
+  # get pvalue and AUC from glm and roc
+  outputData <- run_glm(speciesFile, manifestFile)
+
+  # write to output
+  write.table(outputData, file=paste0("../output/univariable-modelling/species.unimodel.all.", pvalue, ".txt"), row.names=F, col.names=T, sep="\t")
+
+  # write filtered to output
+  for (cutoff in c("0.05")) {
+
+    if (length(outputData[,1])!= 0) {
+      
+      filteredOutputData <- dplyr::filter(outputData, glm.pvalue < cutoff)
+    } else {
+      filteredOutputData <- outputData
+    }
+    write.table(filteredOutputData, file=paste0("../output/univariable-modelling/species.unimodel.all.", pvalue, ".", cutoff, ".txt"), row.names=F, col.names=T, sep="\t")
+  
+  }
+}
+
+```
+

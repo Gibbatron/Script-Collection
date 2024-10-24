@@ -1,0 +1,164 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+Analysis of pilot data
+analysisID: agan0005
+
+Define the name of the manifest file
+
+```{r}
+
+manifestFile <- "metadata.2groups.xlsx"
+
+manifestFile <- paste0("../input/", manifestFile)
+
+```
+
+
+Load library to begin analysis
+
+```{r}
+
+library("readxl")
+library("dplyr")
+
+```
+
+Define a function to perform one-way ANOVA over columns of a dataframe
+
+```{r}
+
+run_anova <- function (infile, manifestFile) {
+  
+  # read-in sample manifest
+  sampleKey <- read_excel(manifestFile)
+  colnames(sampleKey) <- c("sampleName", "sampleGroup")
+  
+  # read-in metabolite file
+  inputData <- read.table(infile, header = TRUE, check.names = F, sep="\t")
+
+  # transpose
+  inputData2 <- as.data.frame(t(inputData))
+
+  # add the sample groups for the anova and remove sampleIDs
+  iData <- merge(sampleKey, inputData2, by.x="sampleName", by.y="row.names")
+  iData[,1] <- NULL
+
+  # loop over all metabolites and perform one-way anova
+
+  pvalues <- data.frame(ind=character(), oneway.anova.pvalue=double())
+
+  for (i in 2:length(colnames(iData))) {
+    anovaInput <- iData[ , c(1, i)]
+    colnames(anovaInput) <- c("ind", "values")
+  
+    one.way <- aov(values ~ ind, data = anovaInput)
+    sum_test <- unlist(summary(one.way))
+    pv <- sum_test["Pr(>F)1"]
+  
+    pvalues[nrow(pvalues) + 1,] <- c(colnames(iData)[i], pv)
+  }
+  
+  outputData <- merge(pvalues, inputData, by.x="ind", by.y="row.names")
+  
+  return (outputData)
+}
+
+```
+
+
+Metabolite anova data
+
+```{r}
+
+# define input files
+metaboliteFile <- "../output/norm/metabolite.norm.txt"
+
+# get pvalues from on-way anova
+outputData <- run_anova(metaboliteFile, manifestFile)
+
+# write to output
+write.table(outputData, file="../output/norm.filtered/metabolite.norm.filtered.all.txt", row.names=F, col.names=T, sep="\t")
+
+# write filtered to output
+for (cutoff in c("0.01", "0.05")) {
+  
+  filteredOutputData <- dplyr::filter(outputData, oneway.anova.pvalue < cutoff)
+  write.table(filteredOutputData, file=paste0("../output/norm.filtered/metabolite.norm.filtered.", cutoff, ".txt"), row.names=F, col.names=T, sep="\t")
+  
+}
+
+```
+
+Protein anova data
+
+```{r}
+
+# define input files
+proteinFile <- "../output/norm/protein.norm.txt"
+
+# get pvalues from on-way anova
+outputData <- run_anova(proteinFile, manifestFile)
+
+# write to output
+write.table(outputData, file="../output/norm.filtered/protein.norm.filtered.all.txt", row.names=F, col.names=T, sep="\t")
+
+# write filtered to output
+for (cutoff in c("0.01", "0.05")) {
+  
+  filteredOutputData <- dplyr::filter(outputData, oneway.anova.pvalue < cutoff)
+  write.table(filteredOutputData, file=paste0("../output/norm.filtered/protein.norm.filtered.", cutoff, ".txt"), row.names=F, col.names=T, sep="\t")
+  
+}
+
+```
+
+Species anova data
+
+```{r}
+
+# define input files
+speciesFile <- "../output/norm/species.norm.txt"
+
+# get pvalues from on-way anova
+outputData <- run_anova(speciesFile, manifestFile)
+
+# write to output
+write.table(outputData, file="../output/norm.filtered/species.norm.filtered.all.txt", row.names=F, col.names=T, sep="\t")
+
+# write filtered to output
+for (cutoff in c("0.01", "0.05")) {
+  
+  filteredOutputData <- dplyr::filter(outputData, oneway.anova.pvalue < cutoff)
+  write.table(filteredOutputData, file=paste0("../output/norm.filtered/species.norm.filtered.", cutoff, ".txt"), row.names=F, col.names=T, sep="\t")
+  
+}
+
+```
+
+Give a tally of good molecules
+
+```{r}
+
+tally <- setNames(data.frame(matrix(ncol = 6, nrow = 0)), c("numberOfProteinsp001", "numberOfProteinsp005", "numberOfMetabolitesp001", "numberOfMetabolitesp005", "numberOfSpeciesp001", "numberOfSpeciesp005"))
+
+myNumbers <- c()
+
+for (dataType in c("protein", "metabolite", "species")) {
+  for (cutoff in c("0.01", "0.05")) {
+  
+    inData <- read.table(paste0("../output/norm.filtered/", dataType, ".norm.filtered.", cutoff, ".txt"), sep="\t", header=T)
+  
+    myNumbers <- c(myNumbers, length(inData[,1]))
+  }
+}
+  
+tally <-rbind(tally, myNumbers)
+colnames(tally) <- c("numberOfProteinsp001", "numberOfProteinsp005", "numberOfMetabolitesp001", "numberOfMetabolitesp005", "numberOfSpeciesp001", "numberOfSpeciesp005")
+  
+write.table(tally, file="../output/norm.filtered/tally.txt", row.names=F, col.names=T, sep="\t"
+  
+)
+```

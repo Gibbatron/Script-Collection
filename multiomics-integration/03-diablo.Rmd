@@ -1,0 +1,435 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+Analysis of pilot data
+analysisID: agan0005
+
+Define the names and location of input data
+•If you change the names of these files, you can run a different dataset through without needed to change the rest of the code•
+
+```{r}
+
+#setwd(dir = "set/your/path") #set your working directory
+
+metaboliteFile <- "metabolte.csv"
+speciesFile <- "microbe_species.csv"
+proteinFile <- "protein_ID.csv"
+manifestFile <- "metadata.2groups.xlsx"
+
+metaboliteFile <- paste0("../input/", metaboliteFile)
+speciesFile <- paste0("../input/", speciesFile)
+proteinFile <- paste0("../input/", proteinFile)
+manifestFile <- paste0("../input/", manifestFile)
+
+```
+
+install required packages
+
+```{r}
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  BiocManager::install("mixOmics")
+
+## reading excel files
+
+install.packages("readxl")
+
+# data wrangling
+
+install.packages("dplyr")
+
+# plotting
+
+install.packages("ggplot2")
+install.packages("ggridges")
+
+```
+
+Load library to begin analysis
+
+```{r}
+
+library("mixOmics")
+library("readxl")
+library("dplyr")
+library("ggplot2")
+library("ggridges")
+
+```
+
+
+Read in metabolite data
+
+```{r}
+
+## metabolite IDs are name the rownames of the dataframe
+metaboliteData <- read.csv(metaboliteFile, row.names = 1, header = TRUE, check.names = F)
+
+## remove the first row of sampleTypes
+metaboliteData <- metaboliteData[-1, ]
+rNames <- row.names(metaboliteData)
+
+## change character to numeric 
+metaboliteData <- as.data.frame(sapply(metaboliteData, as.numeric))
+row.names(metaboliteData) <- rNames
+
+## check the dimension of the dataframe as a check
+print(dim(metaboliteData))
+
+```
+
+Read in protein data
+
+```{r}
+
+## metabolite IDs are name the rownames of the dataframe
+proteinData <- read.csv(proteinFile, row.names = 1, header = TRUE, check.names = F)
+
+## remove first column of protein names
+proteinData[,1] <- NULL
+
+## remove the first row of sampleTypes
+proteinData <- proteinData[-1, ]
+rNames <- row.names(proteinData)
+
+## change character to numeric 
+proteinData <- as.data.frame(sapply(proteinData, as.numeric))
+row.names(proteinData) <- rNames
+
+## check the dimension of the dataframe
+print(dim(proteinData))
+
+```
+
+Read in species data
+
+```{r}
+
+## metabolite IDs are name the rownames of the dataframe
+speciesData <- read.csv(speciesFile, row.names = 1, header = TRUE, check.names = F)
+
+## remove the first row of sampleTypes
+speciesData  <- speciesData[-1, ]
+rNames <- row.names(speciesData)
+
+## change character to numeric 
+speciesData <- as.data.frame(sapply(speciesData, as.numeric))
+row.names(speciesData) <- rNames
+
+## check the dimension of the dataframe
+print(dim(speciesData))
+
+```
+
+Read in sample manifest 
+
+```{r}
+
+sampleKey <- read_excel(manifestFile)
+
+#change the column names
+
+colnames(sampleKey) <- c("sampleName", "sampleGroup")
+
+```
+
+Order columns by sampleName for all dataframes, so that samples are in the same order
+
+```{r}
+
+metaboliteData <- metaboliteData[sampleKey$sampleName]
+proteinData <- proteinData[sampleKey$sampleName]
+speciesData <- speciesData[sampleKey$sampleName]
+
+## check to make sure in correct order
+identical(colnames(metaboliteData), sampleKey$sampleName)
+identical(colnames(proteinData), sampleKey$sampleName)
+identical(colnames(speciesData), sampleKey$sampleName)
+
+```
+
+Create numerical arrays from the dataframes
+•These need to be transposed so that samplenames are now rownames• do this later
+
+```{r}
+
+mArray <- as.matrix((metaboliteData))
+pArray <- as.matrix((proteinData))
+sArray <- as.matrix((speciesData))
+
+```
+
+Write these numerics back to a file under output (although we don't use these)
+
+```{r}
+
+write.table(mArray, file="../output/raw/metabolite.raw.txt", row.names=T, col.names=T, sep="\t")
+write.table(pArray, file="../output/raw/protein.raw.txt", row.names=T, col.names=T, sep="\t")
+write.table(sArray, file="../output/raw/species.raw.txt", row.names=T, col.names=T, sep="\t")
+
+```
+
+NORMALISATION: species data
+Transform each column separately from counts to percentage of total counts
+
+```{r}
+
+# create empty array for percentage data
+
+normSArray <- sArray
+
+# for each column in turn
+
+for (i in 1:length(colnames(sArray))) {
+  normSArray[,i] <- sapply(sArray[,i], function(x) (x / sum(sArray[,i])) * 100 )
+}
+
+# write to file for checking
+
+write.table(normSArray, file="../output/norm/species.norm.txt", row.names=T, col.names=T, sep="\t")
+
+```
+
+NORMALISATION: metabolite data
+Community standard: log10 transform
+
+```{r}
+
+# log10
+
+normMArray <- log(mArray, base=10)
+
+# restore zero values from Inf
+
+normMArray[!is.finite(normMArray)] <- 0
+
+# write to file for checking
+
+write.table(normMArray, file="../output/norm/metabolite.norm.txt", row.names=T, col.names=T, sep="\t")
+
+```
+
+NORMALISATION: protein data
+Community standard: log10 transform
+
+PROPOSED CHANGE: https://bioconductor.org/packages/release/bioc/vignettes/DEP/inst/doc/DEP.html#normalization
+
+OBERVATION: this is zero-centric data
+2 populations in the data: a zero population and a not zero population
+Therefore the anova is suboptimal, hence need to look at bioconductor package
+
+hist(normPArray)
+hist(normPArray[,1])
+
+```{r}
+
+# log10
+
+normPArray <- log(pArray, base=10)
+
+# restore zero values from Inf
+
+normPArray[!is.finite(normPArray)] <- 0
+
+# write to file for checking
+
+write.table(normPArray, file="../output/norm/protein.norm.txt", row.names=T, col.names=T, sep="\t")
+
+```
+
+boxplots
+
+```{r}
+
+## define a function for plotting
+
+myBoxplot <- function(aa, datatype, title, xtitle, ytitle) {
+  
+  plotMe <- stack(as.data.frame(aa))
+  
+  ggplot(plotMe) +
+    geom_boxplot(aes(x = ind, y = values)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    ggtitle(title) +
+    xlab(xtitle) +
+    ylab(ytitle)
+  
+  ggsave(paste0("../output/", datatype, "/", gsub(" ", "_", title), ".boxplot.", datatype, ".pdf"))
+                
+}
+
+# protein
+
+myBoxplot(pArray, "raw", "raw protein", "sampleID", "raw abundance")
+myBoxplot(normPArray, "norm", "log10 normalised protein", "sampleID", "log10 abundance")
+
+# metabolite
+
+myBoxplot(mArray, "raw", "raw metabolite", "sampleID", "raw abundance")
+myBoxplot(normMArray, "norm", "log10 normalised metabolite", "sampleID", "log10 abundance")
+
+# species
+
+myBoxplot(sArray, "raw", "raw species", "sampleID", "species count")
+myBoxplot(normSArray, "norm", "percentage species count", "sampleID", "percentage count")
+
+```
+
+distribution plots (these take a while to plot)
+
+```{r}
+
+## define a function for plotting
+
+myDisplot <- function(aa, datatype, title, xtitle, ytitle) {
+  
+  plotMe <- stack(as.data.frame(aa))
+  plotMe <- data.frame(ind=plotMe$ind, values=plotMe$values)
+  plotMe <- plotMe %>% mutate_all(as.ordered)
+
+  ggplot(plotMe, aes(x = values, y = ind)) +
+    geom_density_ridges2() 
+
+  ggsave(paste0("../output/", datatype, "/", gsub(" ", "_", title), ".freqplot.", datatype, ".pdf"))
+                
+}
+
+# protein
+
+#myDisplot(pArray, "raw", "raw protein", "sampleID", "raw abundance")
+#myDisplot(normPArray, "norm", "log10 normalised protein", "sampleID", "log10 abundance")
+
+# metabolite
+
+#myDisplot(mArray, "raw", "raw metabolite", "sampleID", "raw abundance")
+#myDisplot(normMArray, "norm", "log10 normalised metabolite", "sampleID", "log10 abundance")
+
+# species
+
+#myDisplot(normSArray, "norm", "percentage species count", "sampleID", "percentage count")
+#myDisplot(sArray, "raw", "raw species", "sampleID", "species count")
+
+```
+
+Shapiro-Wilk test for normality
+https://www.r-bloggers.com/2019/08/shapiro-wilk-test-for-normality-in-r/
+
+```{r}
+
+# metabolite
+
+shapiroWilkPvalues <- data.frame(rawMetabolite=apply(mArray, 2, function(x) shapiro.test(x)$p.value))
+
+shapiroWilkPvalues$normMetabolite <- apply(normMArray, 2, function(x) shapiro.test(x)$p.value)
+        
+# protein
+
+shapiroWilkPvalues$rawProtein <- apply(pArray, 2, function(x) shapiro.test(x)$p.value)
+
+shapiroWilkPvalues$normProtein <- apply(normPArray, 2, function(x) shapiro.test(x)$p.value)
+
+# species
+
+shapiroWilkPvalues$rawSpecies <- apply(sArray, 2, function(x) shapiro.test(x)$p.value)
+
+shapiroWilkPvalues$normSpecies <- apply(normSArray, 2, function(x) shapiro.test(x)$p.value)
+
+
+# write to file
+
+shapiroWilkPvalues <- cbind(row.names(shapiroWilkPvalues), shapiroWilkPvalues)
+colnames(shapiroWilkPvalues)[1] <- "sampleID"
+write.table(shapiroWilkPvalues, file="output/shapirowilks.txt", row.names=F, col.names=T, sep="\t")
+
+```
+
+
+http://mixomics.org/mixdiablo/
+
+integrate numerical data into a list for diablo
+
+```{r}
+
+allData <- list(metabolite=mArray, protein=pArray, species=sArray)
+
+```
+
+run diablo method
+we first fit a block PSDA model
+```{r}
+
+## require the near.zero.var to take account of protein features with zero variance (a lot of zero values)
+
+diabloResults <- block.plsda(allData, sampleKey$sampleGroup, near.zero.var = T)
+
+```
+
+Plot Diablo
+visualise the correlation between the first components from each dataset. numbers indicate the pearsons correlation coefficient. 95% confidence elipse plots.
+```{r}
+
+plotDiablo(diabloResults)
+
+```
+
+
+Plot samples
+plots the individual PCA plots.
+```{r}
+
+plotIndiv(diabloResults,
+          legend = T) 
+
+```
+
+Plot Arrows
+start of the arrow indicates the centroind between all datasets for a given sample and the tip of the arrow the location of that same sample but in each block. plot highlights the agreement between all datasets at the sample level
+```{r}
+
+plotArrow(diabloResults)
+
+
+```
+
+Plot variables
+Correlation circle plot indicates contribution of each variable to each component. important variables should be close to the larger circle.
+clustering of points indicate a strong correlation between variables
+
+as well as correlation between variables
+
+```{r}
+
+## size of point changed with cex
+
+plotVar(diabloResults, var.names=F, style='graphics', legend=T, pch = c(16, 17, 15), cex=c(0.5, 0.5, 0.5), col = c("darkorchid", "brown1", "lightgreen"), title="pilot")
+
+```
+
+Circos plot
+represents correlations between variables of different types, represented on the side quadrants
+several display options are possible. to show within and between connections between blocks, and expression levels of each variable according to each class, use line=TRUE
+cutoff argument is used to visualise correlation coefficients above this threshold in the multi-omics signature
+
+the plot allows us to visualise cross-correlations between data types, and the nature of these correlations (pos or neg)
+```{r}
+
+circosPlot(diabloResults, cutoff = 0.9, line = TRUE, color.blocks = c('darkorchid', 'brown1', 'lightgreen'), color.cor = c("grey20", "blue"), size.labels = 1.5)
+
+```
+
+Network
+relevance networks,also built on similarity matrix, can also visualise correlations between different types of variables. each colour represents a variable type.
+threshold can be set using argument cutoff
+
+```{r}
+network(diabloResults,
+        cutoff = 0.5)
+
+
+
+```
+
+
+

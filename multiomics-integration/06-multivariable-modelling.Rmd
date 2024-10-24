@@ -1,0 +1,221 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+Analysis of pilot data
+analysisID: agan0005
+
+Take the variables of interest and see whether combinations of these better discriminate between the sample groups
+
+```{r}
+
+chosenMetabolites <- c("metabolite1", "metabolite2")
+chosenProteins <- c("protein1", "protein2", "protein3")
+chosenSpecies <- c("")
+
+```
+
+```{r}
+
+#install.packages("pROC")
+
+library("readxl")
+library("dplyr")
+library("pROC")
+
+```
+
+Create the file with the required molecules
+
+```{r}
+
+manifestFile <- "../input/metadata.2groups.xlsx"
+sampleKey <- read_excel(manifestFile)
+colnames(sampleKey) <- c("sampleName", "sampleGroup")
+  
+manifest <- read.table(manifestFile, header = TRUE, check.names = F, sep="\t")
+
+library("dplyr")
+
+for (pvalue in c(0.05)) {
+  
+  # get chosen metabolite data
+  metaboliteFile <- paste0("../output/norm.filtered/metabolite.norm.filtered.", pvalue, ".txt")
+  # read-in metabolite file
+  metaboliteData <- read.table(metaboliteFile, header = TRUE, check.names = F, sep="\t")
+  chosenMetaboliteData <- t(dplyr::filter(metaboliteData, ind %in% chosenMetabolites))
+  colnames(chosenMetaboliteData) <- chosenMetaboliteData[1,]
+  chosenMetaboliteData <- chosenMetaboliteData[-c(1,2),]
+  colnames(chosenMetaboliteData) <- paste0("m", colnames(chosenMetaboliteData))
+  
+  # get chosen protein data
+  proteinFile <- paste0("../output/norm.filtered/protein.norm.filtered.", pvalue, ".txt")
+  proteinData <- read.table(proteinFile, header = TRUE, check.names = F, sep="\t")
+  chosenProteinData <- t(dplyr::filter(proteinData, ind %in% chosenProteins))
+  colnames(chosenProteinData) <- chosenProteinData[1,]
+  chosenProteinData <- chosenProteinData[-c(1,2),]
+  
+  # get chosen species data
+  speciesFile <- paste0("../output/norm.filtered/species.norm.filtered.", pvalue, ".txt")
+  speciesData <- read.table(speciesFile, header = TRUE, check.names = F, sep="\t")
+  chosenSpeciesData <- t(dplyr::filter(speciesData, ind %in% chosenSpecies))
+  colnames(chosenSpeciesData) <- chosenSpeciesData[1,]
+  chosenSpeciesData <- chosenSpeciesData[-c(1,2),]
+  
+  ## make merge data set
+  
+  allData <- sampleKey
+  
+   if (length(chosenMetaboliteData) > 1) {
+     allData <- merge(allData, chosenMetaboliteData, by.x="sampleName", by.y="row.names")
+   }
+  
+  if (length(chosenProteinData) > 1) {
+     allData <- merge(allData, chosenProteinData, by.x="sampleName", by.y="row.names")
+  }
+  
+  if (length(chosenSpeciesData) > 1) {
+    allData <- merge(allData, chosenSpeciesData, by.x="sampleName", by.y="row.names")
+  }
+}
+
+
+# sampleGroup needs to be a factor
+
+allData$sampleGroup <- as.factor(allData$sampleGroup)
+
+# value columns need to be numeric
+
+for (i in 3:length(colnames(allData))) {
+  allData[,i] <- as.numeric(allData[,i])
+}
+
+```
+
+
+Run the linear model over all perturbations of the variables
+
+```{r}
+
+# 2's
+
+allResults <- data.frame(variables=character(), pvalues=numeric(), AUC=numeric())
+
+for (i in 3:(length(colnames(allData))-1)) {
+  
+  for (j in (i+1):length(colnames(allData))) {
+  
+    sampleString <- paste(colnames(allData)[i], colnames(allData)[j])
+    
+    ## build up the glm formula
+    
+    vars <- paste(colnames(allData)[i], "+", colnames(allData)[j])
+    form <- as.formula(paste("sampleGroup ~ ", vars))
+  
+    glmResults <- glm(formula = form,
+                     data = allData,
+                     family = binomial)
+
+    pvalueString <- paste(coef(summary(glmResults))[,4][2], coef(summary(glmResults))[,4][3])
+   
+     ## get the auc
+    temp <- cbind(predict(glmResults), allData$sampleGroup)
+    colnames(temp) <- c("pred", "status")
+    dfTemp <- as.data.frame(temp)
+    AUC <- auc(roc(dfTemp$status, dfTemp$pred))[1]
+    
+    allResults[nrow(allResults) + 1,] = c(sampleString, pvalueString, AUC)
+  
+  }
+  
+}
+
+# 3's
+
+for (i in 3:(length(colnames(allData))-2)) {
+  
+  for (j in (i+1):(length(colnames(allData))-1)) {
+  
+    for (k in (j+1):length(colnames(allData))) {
+  
+
+      sampleString <- paste(colnames(allData)[i], colnames(allData)[j], colnames(allData)[k])
+    
+      ## build up the glm formula
+    
+      vars <- paste(colnames(allData)[i], "+", colnames(allData)[j], "+", colnames(allData)[k])
+      form <- as.formula(paste("sampleGroup ~ ", vars))
+  
+      glmResults <- glm(formula = form,
+                       data = allData,
+                      family = binomial)
+
+      pvalueString <- paste(coef(summary(glmResults))[,4][2], coef(summary(glmResults))[,4][3], coef(summary(glmResults))[,4][4])
+   
+      ## get the auc
+      temp <- cbind(predict(glmResults), allData$sampleGroup)
+      colnames(temp) <- c("pred", "status")
+      dfTemp <- as.data.frame(temp)
+      AUC <- auc(roc(dfTemp$status, dfTemp$pred))[1]
+    
+      allResults[nrow(allResults) + 1,] = c(sampleString, pvalueString, AUC)
+  
+    }
+  
+  }
+
+}
+
+# 4's
+
+for (i in 3:(length(colnames(allData))-3)) {
+  
+  for (j in (i+1):(length(colnames(allData))-2)) {
+  
+    for (k in (j+1):(length(colnames(allData))-1)) {
+  
+      for (l in (k+1):length(colnames(allData))) {
+      
+        sampleString <- paste(colnames(allData)[i], colnames(allData)[j], colnames(allData)[k], colnames(allData)[l])
+    
+        ## build up the glm formula
+    
+        vars <- paste(colnames(allData)[i], "+", colnames(allData)[j], "+", colnames(allData)[k], "+", colnames(allData)[l])
+        form <- as.formula(paste("sampleGroup ~ ", vars))
+  
+        glmResults <- glm(formula = form,
+                         data = allData,
+                      family = binomial)
+
+        pvalueString <- paste(coef(summary(glmResults))[,4][2], coef(summary(glmResults))[,4][3], coef(summary(glmResults))[,4][4], coef(summary(glmResults))[,4][5])
+   
+        ## get the auc
+        temp <- cbind(predict(glmResults), allData$sampleGroup)
+        colnames(temp) <- c("pred", "status")
+        dfTemp <- as.data.frame(temp)
+        AUC <- auc(roc(dfTemp$status, dfTemp$pred))[1]
+    
+        allResults[nrow(allResults) + 1,] = c(sampleString, pvalueString, AUC)
+  
+      }
+    }
+  
+  }
+
+}
+
+
+    
+
+```
+
+write to file
+
+```{r}
+
+write.table(allResults, file="../output/AUC.txt" , sep="\t", row.names = F, col.names = T)
+
+```
+
+

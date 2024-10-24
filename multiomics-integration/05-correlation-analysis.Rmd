@@ -1,0 +1,91 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+Analysis of pilot data
+analysisID: agan0005
+
+
+```{r}
+
+manifestFile <- "../input/metadata.2groups.xlsx"
+
+```
+
+Load library to begin analysis
+
+```{r}
+
+#install.packages("corrplot")
+library(corrplot)
+
+```
+
+Create a matrix with all data
+
+```{r}
+
+ProcessData <- function(infile) {
+  inputData <- read.table(infile, header = TRUE, check.names = F, sep="\t")
+  rownames(inputData) <- inputData[,1]
+  inputData[,1:2] <- NULL
+  inputData <- as.data.frame(t(inputData))
+  
+  return(inputData)
+}
+
+
+metaboliteFile <- "../output/univariable-modelling/metabolite.unimodel.all.0.05.0.05.txt"
+proteinFile <- "../output/univariable-modelling/protein.unimodel.all.0.05.0.05.txt"
+speciesFile <- "../output/univariable-modelling/species.unimodel.all.0.05.0.05.txt"
+
+metaboliteData <- ProcessData(metaboliteFile)
+proteinData <- ProcessData(proteinFile)
+speciesData <- ProcessData(speciesFile)
+
+allData <- merge(metaboliteData, proteinData, by="row.names")
+allData <- merge(allData, speciesData, by.x="Row.names", by.y="row.names")
+rownames(allData) <- allData$Row.names
+allData$Row.names <- NULL
+
+```
+
+Perform correlation
+https://www.displayr.com/how-to-create-a-correlation-matrix-in-r/
+https://bookdown.org/ndphillips/YaRrr/saving-plots-to-a-file-with-pdf-jpeg-and-png.html
+
+
+```{r}
+
+mydata.cor <- cor(allData, method="spearman")
+
+```
+
+Hierarchical heatmap
+
+```{r}
+
+pdf(file="../output/correlation/heatmap.pdf", width=14, height=14)
+palette = colorRampPalette(c("blue", "white", "red")) (20)
+heatmap(x = mydata.cor, col = palette, symm = TRUE,  margins = c(15, 15))
+dev.off()
+
+```
+
+Order correlation values according to the heatmap and print
+```{r}
+
+x <- heatmap(x = mydata.cor, col = palette, symm = TRUE)
+y <- as.data.frame(mydata.cor)
+
+outData <- y[x$rowInd, x$colInd]
+outData <- cbind(row.names(outData), outData)
+colnames(outData)[1] <- "X"
+write.table(outData, file="../output/correlation/correlations.txt", sep="\t", row.names=F, col.names=T)
+
+
+
+```
+
+
