@@ -1,0 +1,69 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+Set the working directory
+
+Install
+
+```{r}
+
+#install.packages("Rtools")
+install.packages(c("dplyr", "ggPlot2", "BiocManager"), ask=FALSE)
+
+```
+
+```{r}
+
+require("BiocManager")
+
+BiocManager::install("oligo", ask=FALSE)
+#BiocManager::install("pd.hugene.1.0.st.v1", ask=FALSE)
+BiocManager::install("pd.hugene.2.0.st", ask=FALSE)
+BiocManager::install("limma", ask=FALSE)
+BiocManager::install("biomaRt", ask=FALSE)
+
+```
+
+Test installation
+
+```{r}
+
+require("oligo")
+require("limma")
+require("pd.hugene.1.0.st.v1")
+require("ggplot2")
+require("dplyr")
+require("biomaRt")
+
+targets <- readTargets(file="targets.txt")
+exp.raw <- read.celfiles(filenames=targets$fileName, sampleNames=targets$sampleID)
+exp.norm <- rma(exp.raw)
+boxRaw <- as.data.frame(exprs(exp.raw))
+log2BoxRaw <- log2(boxRaw)
+boxplot(log2BoxRaw, range=0, main="Boxplot: log2 raw expression", las=2)
+boxNorm <- as.data.frame(exprs(exp.norm))
+boxplot(boxNorm, range=0, main="Boxplot: rma normalised expression", las=2)
+fac <- factor(targets$sampleType)
+design <- model.matrix(~0+fac)
+colnames(design) <- levels(fac)
+contrast.matrix <- makeContrasts(FASR-MCF7, TAMR-MCF7, TOYA-MCF7, levels=design)
+exp.coefFit <- lmFit(exp.norm, design=design)
+exp.contFit <- contrasts.fit(exp.coefFit, contrast.matrix)
+exp.ebayes <- eBayes(exp.contFit)
+topTable <- topTable(exp.ebayes, n=length(exp.ebayes$F))
+annotationDF <- read.table("affy.annotation.txt", sep="\t", header=T, quote="")
+annotatedTopTable <- merge(annotationDF, topTable, by.x="affy_hugene_1_0_st_v1", by.y="row.names")
+sortedAnnotatedTopTable <- arrange(annotatedTopTable, P.Value)
+filteredSortedAnnotatedTopTable  <- filter(sortedAnnotatedTopTable, (FASR...MCF7 >= 0.584963 | TAMR...MCF7 >= 0.584963 | TOYA...MCF7 >= 0.584963 | FASR...MCF7 <= -0.584963 | TAMR...MCF7 <= -0.584963 | TOYA...MCF7 <= -0.584963) & adj.P.Val < 0.01)
+pca <- prcomp(t(exprs(exp.norm)), center=TRUE, scale=TRUE)
+scores <- data.frame(targets$sampleType, pca$x[,1:2])
+qplot(x=PC1, y=PC2, data=scores, label=factor(targets$sampleID), colour=factor(targets$sampleType))  + geom_text(size=2.5) + scale_colour_discrete(name="sample type")
+
+```
+
+
+
+
+
