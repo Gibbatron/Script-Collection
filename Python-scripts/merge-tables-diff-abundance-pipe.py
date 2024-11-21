@@ -1,3 +1,5 @@
+## Script to merge normalised, variance stabilised, and DEG tables together following the differential abundance pipeline.
+
 import pandas as pd
 
 # Load the data
